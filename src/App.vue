@@ -1,8 +1,7 @@
 <template>
   <main>
-    <p>Web Bluetooth API</p>
-    <button @click="requestDevice">Solicitar Permissão</button>
-    <div>{{ batteryLevel }}%</div>
+    <button @click="requestDevice">Conectar</button>
+    <div>{{ barcode }}</div>
   </main>
 </template>
 
@@ -36,7 +35,7 @@ interface IBluetoothConnection {
   device: BluetoothDevice | null
   server: BluetoothRemoteGATTServer | null
   service: {
-    battery: BluetoothRemoteGATTService | null
+    barcode: BluetoothRemoteGATTService | null
   }
 }
 
@@ -47,12 +46,11 @@ const bl = reactive<IBluetoothConnection>({
   device: null,
   server: null,
   service: {
-    battery: null
+    barcode: null
   }
 })
 
-const batteryLevel = ref<any>(0)
-const batteryLevelInterval = ref<any>(null)
+const barcode = ref<string[]>([])
 
 // -- Watchers --------------------------------------------------------------
 
@@ -78,11 +76,15 @@ watch(
 
 async function requestDevice() {
   const options = {
-    acceptAllDevices: true,
-    optionalServices: ['battery_service', 'heart_rate']
+    filters: [{ services: ['0000fff0-0000-1000-8000-00805f9b34fb'] }]
   }
-
+try {
   bl.device = await navigator.bluetooth.requestDevice(options)
+
+  if(!bl.device.gatt) {
+    console.log('Não foi possível conectar ao dispositivo')
+    return
+  }
 
   if (!bl.device) {
     console.log('Nenhum dispositivo selecionado')
@@ -90,78 +92,42 @@ async function requestDevice() {
   }
 
   bl.isConnected = true
+  
+  bl.device.addEventListener('gattserverdisconnected', ()=> {
+    console.log('Desconectado')
+    bl.isConnected = false
+    alert('Desconectado')
+  })
 
   bl.server = await bl.device.gatt?.connect()
 
-  bl.device.addEventListener('gattserverdisconnected', onDisconnected)
-
-  await connect()
-}
-
-function onDisconnected() {
-  console.log('> Bluetooth Device disconnected')
-  clearInterval(batteryLevelInterval.value)
-  bl.isConnected = false
-  connect()
-}
-
-async function connect() {
-  exponentialBackoff(
-    3 /* max retries */,
-    2 /* seconds delay */,
-    async function toTry() {
-      time('Connecting to Bluetooth Device... ')
-      await bl.device?.gatt?.connect()
-    },
-    async function success() {
-      console.log('> Bluetooth Device connected. Try disconnect it now.')
-
-      console.log('Getting Battery Service...')
-      bl.service.battery = await bl.server.getPrimaryService('battery_service')
-
-      batteryLevelInterval.value = setInterval(() => {
-        readBatteryLevel()
-      }, 1000)
-    },
-    function fail() {
-      time('Failed to reconnect.')
-    }
-  )
-}
-
-async function readBatteryLevel() {
-  console.log('Getting Battery Level Characteristic...')
-  const characteristic = await bl.service.battery?.getCharacteristic('battery_level')
-
-  console.log('Reading Battery Level...')
-  const value = await characteristic?.readValue()
-
-  console.log('> Battery Level is ' + value?.getUint8(0) + '%')
-
-  batteryLevel.value = value?.getUint8(0)
-}
-
-// -- Utils -----------------------------------------------------------------
-
-// This function keeps calling "toTry" until promise resolves or has
-// retried "max" number of times. First retry has a delay of "delay" seconds.
-// "success" is called upon success.
-async function exponentialBackoff(max, delay, toTry, success, fail) {
-  try {
-    const result = await toTry()
-    success(result)
-  } catch (error) {
-    if (max === 0) {
-      return fail()
-    }
-    time('Retrying in ' + delay + 's... (' + max + ' tries left)')
-    setTimeout(function () {
-      exponentialBackoff(--max, delay * 2, toTry, success, fail)
-    }, delay * 1000)
+  if (!bl.server) {
+    console.log('Não foi possível conectar ao servidor')
+    return
   }
-}
 
-function time(text) {
-  console.log('[' + new Date().toJSON().substr(11, 8) + '] ' + text)
+  const service = await bl.server.getPrimaryService('0000fff0-0000-1000-8000-00805f9b34fb');
+
+  console.log('Service: ', service)
+
+  const characteristic = await service.getCharacteristic('0000fff1-0000-1000-8000-00805f9b34fb');
+
+  console.log('Characteristic: ', characteristic)
+
+  characteristic.startNotifications().then(() => {
+    console.log('Notifications started')
+    characteristic.addEventListener('characteristicvaluechanged', (event) => {
+      const value = event.target.value
+      const decoder = new TextDecoder('utf-8')
+      const decodedValue = decoder.decode(value)
+      console.log('Valor lido: ', decodedValue)
+      barcode.value.push(decodedValue)
+    })
+  })
+
+
+} catch (error) {
+  console.error('Erro ao conectar ao dispositivo', error)
+}
 }
 </script>
